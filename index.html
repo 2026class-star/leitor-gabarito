@@ -98,6 +98,7 @@
     </div>
     <div class="center">
       <button id="btnStart">Iniciar câmera</button>
+      <button id="btnCapture" class="secondary" disabled>Capturar e ler</button>
       <button id="btnStop" class="secondary" disabled>Parar</button>
     </div>
     <div id="statusMsg" class="status warn" style="display:none;"></div>
@@ -164,6 +165,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
   overlayEl = document.getElementById('overlay');
   document.getElementById('btnStart').onclick = startCamera;
   document.getElementById('btnStop').onclick = stopCamera;
+  document.getElementById('btnCapture').onclick = manualCapture;
   document.getElementById('btnConfirmar').onclick = ()=> sendResult(lastResult);
   document.getElementById('btnRepetir').onclick = resumeScanning;
 });
@@ -189,7 +191,9 @@ async function startCamera(){
     await videoEl.play();
     document.getElementById('btnStart').disabled = true;
     document.getElementById('btnStop').disabled = false;
+    document.getElementById('btnCapture').disabled = false;
     autoResume = true;
+    setStatus('Câmera iniciada. Enquadre a folha e mantenha o QR Code nítido.', 'warn');
     scanLoop();
   }catch(err){
     setStatus('Não consegui acessar a câmera: '+err.message, 'bad');
@@ -202,6 +206,26 @@ function stopCamera(){
   if(stream) stream.getTracks().forEach(t=>t.stop());
   document.getElementById('btnStart').disabled = false;
   document.getElementById('btnStop').disabled = true;
+  document.getElementById('btnCapture').disabled = true;
+}
+
+
+async function manualCapture(){
+  if(processing || !cvReady || videoEl.videoWidth===0) return;
+  processing = true;
+  autoResume = false;
+  if(rafId) cancelAnimationFrame(rafId);
+  setStatus('Capturando imagem e procurando QR Code...', 'warn');
+
+  try{
+    const ok = await tryProcessFrame(true);
+    if(!ok){
+      autoResume = true;
+      scanLoop();
+    }
+  }finally{
+    processing = false;
+  }
 }
 
 function resumeScanning(){
@@ -224,7 +248,7 @@ function scanLoop(){
   });
 }
 
-async function tryProcessFrame(){
+async function tryProcessFrame(manual=false){
   const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
   overlayEl.width = vw; overlayEl.height = vh;
   const cvs = document.createElement('canvas');
@@ -240,16 +264,21 @@ async function tryProcessFrame(){
   drawOverlay(corners, vw, vh);
 
   if(!corners){
-    setStatus('Enquadre a folha inteira, sem cortar os quatro quadrados pretos. Evite sombra e reflexo.', 'warn');
-    return;
+    setStatus('Ainda não encontrei os quatro marcadores. Mostre a folha inteira, sem cortar as bordas.', 'warn');
+    return false;
   }
 
   const warped = warpToReference(cvs, corners);
 
-  let qrData = decodeQR(cvs) || decodeQR(warped);
+  let qrData = decodeQRMulti(cvs) || decodeQRMulti(warped);
   if(!qrData){
-    setStatus('Cantos ok, mas não consegui ler o QR code. Aproxime um pouco.', 'warn');
-    return;
+    setStatus(
+      manual
+        ? 'Folha encontrada, mas o QR Code não foi lido. Aproxime o QR, evite reflexo e toque novamente em “Capturar e ler”.'
+        : 'Folha encontrada. Procurando QR Code... mantenha o celular parado.',
+      'warn'
+    );
+    return false;
   }
   let aluno;
   try{ aluno = JSON.parse(qrData); }
@@ -272,6 +301,7 @@ async function tryProcessFrame(){
   if(document.getElementById('autoSend').checked){
     await sendResult(lastResult);
   }
+  return true;
 }
 
 function drawOverlay(corners, vw, vh){
@@ -434,10 +464,76 @@ function warpToReference(canvasEl, corners){
 
 /* ---------- QR ---------- */
 function decodeQR(canvasEl){
-  const ctx = canvasEl.getContext('2d');
-  const imgData = ctx.getImageData(0,0,canvasEl.width, canvasEl.height);
-  const code = jsQR(imgData.data, imgData.width, imgData.height);
-  return code ? code.data : null;
+  try{
+    const ctx = canvasEl.getContext('2d', {willReadFrequently:true});
+    const imgData = ctx.getImageData(0,0,canvasEl.width,canvasEl.height);
+    const code = jsQR(imgData.data, imgData.width, imgData.height, {
+      inversionAttempts: 'attemptBoth'
+    });
+    return code ? code.data : null;
+  }catch(e){
+    return null;
+  }
+}
+
+function cropCanvas(source, x, y, w, h, scale=1){
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(w*scale));
+  out.height = Math.max(1, Math.round(h*scale));
+  const ctx = out.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(source, x, y, w, h, 0, 0, out.width, out.height);
+  return out;
+}
+
+function enhanceForQR(source){
+  const out = document.createElement('canvas');
+  out.width = source.width;
+  out.height = source.height;
+  const ctx = out.getContext('2d', {willReadFrequently:true});
+  ctx.drawImage(source,0,0);
+
+  const img = ctx.getImageData(0,0,out.width,out.height);
+  const d = img.data;
+  for(let i=0;i<d.length;i+=4){
+    const g = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    const v = g < 145 ? 0 : 255;
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  ctx.putImageData(img,0,0);
+  return out;
+}
+
+function decodeQRMulti(canvasEl){
+  // 1. Imagem completa, original e ampliada.
+  let found = decodeQR(canvasEl);
+  if(found) return found;
+
+  const full2x = cropCanvas(canvasEl,0,0,canvasEl.width,canvasEl.height,2);
+  found = decodeQR(full2x);
+  if(found) return found;
+
+  // 2. Procura em regiões comuns da folha.
+  const W = canvasEl.width, H = canvasEl.height;
+  const regions = [
+    [0,0,W,H*0.45],             // parte superior
+    [0,0,W*0.55,H*0.55],        // superior esquerda
+    [W*0.45,0,W*0.55,H*0.55],   // superior direita
+    [0,H*0.45,W*0.55,H*0.55],   // inferior esquerda
+    [W*0.45,H*0.45,W*0.55,H*0.55] // inferior direita
+  ];
+
+  for(const r of regions){
+    const crop = cropCanvas(canvasEl,r[0],r[1],r[2],r[3],2.5);
+    found = decodeQR(crop);
+    if(found) return found;
+
+    const enhanced = enhanceForQR(crop);
+    found = decodeQR(enhanced);
+    if(found) return found;
+  }
+
+  return null;
 }
 
 /* ---------- Leitura das bolhas ---------- */
