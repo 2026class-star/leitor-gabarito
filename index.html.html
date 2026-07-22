@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leitor de Gabaritos</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script async src="https://docs.opencv.org/4.9.0/opencv.js" onload="onOpenCvReady()"></script>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --accent:#4f9dff;
+    --good:#2ecc71; --bad:#e74c3c; --warn:#f1c40f; --text:#e7ebf3; --muted:#8b93a3;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;}
+  .wrap{max-width:920px;margin:0 auto;padding:16px;}
+  h1{font-size:20px;margin:8px 0 16px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;}
+  label{display:block;font-size:13px;color:var(--muted);margin-bottom:4px;margin-top:10px;}
+  input[type=text],input[type=number],input[type=url]{
+    width:100%;padding:9px 10px;background:#0f1115;border:1px solid var(--line);
+    border-radius:8px;color:var(--text);font-size:14px;
+  }
+  .row{display:flex;gap:10px;flex-wrap:wrap;}
+  .row > div{flex:1;min-width:160px;}
+  button{
+    background:var(--accent);color:#fff;border:none;border-radius:8px;
+    padding:10px 16px;font-size:14px;font-weight:600;cursor:pointer;
+  }
+  button.secondary{background:#2a2f3a;}
+  button.danger{background:var(--bad);}
+  button:disabled{opacity:.4;cursor:not-allowed;}
+  .video-box{position:relative;width:100%;max-width:480px;margin:12px auto;border-radius:10px;overflow:hidden;background:#000;}
+  video,canvas.overlay{width:100%;display:block;}
+  canvas.overlay{position:absolute;top:0;left:0;pointer-events:none;}
+  .status{font-size:13px;padding:8px 10px;border-radius:8px;margin-top:8px;text-align:center;}
+  .status.ok{background:#123c22;color:var(--good);}
+  .status.warn{background:#3c3312;color:var(--warn);}
+  .status.bad{background:#3c1414;color:var(--bad);}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;}
+  th{color:var(--muted);font-weight:600;}
+  .pill{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;}
+  .pill.ok{background:#123c22;color:var(--good);}
+  .pill.bad{background:#3c1414;color:var(--bad);}
+  .toggle{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;color:var(--muted);}
+  .small{font-size:12px;color:var(--muted);}
+  .center{text-align:center;}
+  .flex-between{display:flex;justify-content:space-between;align-items:center;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📋 Leitor de Gabaritos</h1>
+
+  <div class="card" id="configCard">
+    <div class="flex-between"><strong>Configuração</strong><span class="small">preencha antes de escanear</span></div>
+    <label>URL do Google Apps Script (Web App)</label>
+    <input type="url" id="webhookUrl" value="https://script.google.com/macros/s/AKfycbzXC4-UdnPwu5eiewrL_pJzEYhMYsbFH4vDuCWlTzEMz5DV02lLx1V_zkcjtDggz-sqpQ/exec" placeholder="https://script.google.com/macros/s/AKfycb.../exec">
+
+    <div class="row">
+      <div>
+        <label>Número de questões desta prova</label>
+        <input type="number" id="numQuestions" value="60" min="1" max="60">
+      </div>
+      <div>
+        <label>Nome da prova (opcional, vai junto no envio)</label>
+        <input type="text" id="provaNome" placeholder="Simulado 1 - 3º ano">
+      </div>
+    </div>
+
+    <div class="toggle">
+      <input type="checkbox" id="autoSend" checked>
+      <label style="margin:0;" for="autoSend">Envio automático após leitura (sem precisar confirmar cada folha)</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="flex-between">
+      <strong>Câmera</strong>
+      <span id="cvStatus" class="small">carregando OpenCV...</span>
+    </div>
+    <div class="video-box">
+      <video id="video" playsinline muted></video>
+      <canvas id="overlay" class="overlay"></canvas>
+    </div>
+    <div class="center">
+      <button id="btnStart">Iniciar câmera</button>
+      <button id="btnStop" class="secondary" disabled>Parar</button>
+    </div>
+    <div id="statusMsg" class="status warn" style="display:none;"></div>
+  </div>
+
+  <div class="card" id="resultCard" style="display:none;">
+    <div class="flex-between">
+      <div>
+        <div style="font-size:16px;font-weight:700;" id="resAluno">-</div>
+        <div class="small" id="resTurma">-</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:22px;font-weight:800;" id="resTotal">-</div>
+        <div class="small">questões lidas</div>
+      </div>
+    </div>
+    <div class="small" style="margin-top:8px;" id="resRespostas"></div>
+    <div class="row" style="margin-top:12px;">
+      <button id="btnConfirmar">Confirmar e enviar</button>
+      <button id="btnRepetir" class="secondary">Repetir foto</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="flex-between"><strong>Histórico desta sessão</strong><span class="small" id="totalCount">0 enviados</span></div>
+    <table id="historyTable">
+      <thead><tr><th>Hora</th><th>Aluno</th><th>Turma</th><th>Respostas</th><th>Status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<audio id="beep" src="data:audio/wav;base64,UklGRl9vT19XQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQ==" ></audio>
+
+<script>
+/* ======================================================================
+   CONFIG DE LAYOUT — DEVE SER IDÊNTICO ao CONFIG em generate_gabaritos.py
+   ====================================================================== */
+const LAYOUT = {
+  fiducials: { tl:[0.045,0.03], tr:[0.955,0.03], bl:[0.045,0.965], br:[0.955,0.965] },
+  fiducial_size: 0.014,
+  rows_per_col: 30,
+  col_label_x: [0.10, 0.535],
+  col_bubble_x0: [0.145, 0.58],
+  bubble_dx: 0.034,
+  bubble_r: 0.0075,
+  grid_start_y: 0.235,
+  row_h: 0.0225,
+};
+const REF_W = 1000, REF_H = 1414; // resolução de referência após retificação
+
+let cvReady = false;
+function onOpenCvReady(){
+  cvReady = true;
+  document.getElementById('cvStatus').textContent = 'OpenCV pronto ✓';
+}
+
+let stream=null, videoEl, overlayEl, rafId=null, processing=false, autoResume=true;
+let lastResult = null;
+let sentCount = 0;
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  videoEl = document.getElementById('video');
+  overlayEl = document.getElementById('overlay');
+  document.getElementById('btnStart').onclick = startCamera;
+  document.getElementById('btnStop').onclick = stopCamera;
+  document.getElementById('btnConfirmar').onclick = ()=> sendResult(lastResult);
+  document.getElementById('btnRepetir').onclick = resumeScanning;
+});
+
+function setStatus(msg, kind){
+  const el = document.getElementById('statusMsg');
+  el.style.display = 'block';
+  el.className = 'status ' + kind;
+  el.textContent = msg;
+}
+
+async function startCamera(){
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({
+      video:{ facingMode:{ ideal:'environment' }, width:{ideal:1280}, height:{ideal:960} }
+    });
+    videoEl.srcObject = stream;
+    await videoEl.play();
+    document.getElementById('btnStart').disabled = true;
+    document.getElementById('btnStop').disabled = false;
+    autoResume = true;
+    scanLoop();
+  }catch(err){
+    setStatus('Não consegui acessar a câmera: '+err.message, 'bad');
+  }
+}
+
+function stopCamera(){
+  autoResume = false;
+  if(rafId) cancelAnimationFrame(rafId);
+  if(stream) stream.getTracks().forEach(t=>t.stop());
+  document.getElementById('btnStart').disabled = false;
+  document.getElementById('btnStop').disabled = true;
+}
+
+function resumeScanning(){
+  document.getElementById('resultCard').style.display='none';
+  lastResult = null;
+  autoResume = true;
+  scanLoop();
+}
+
+function scanLoop(){
+  if(!autoResume) return;
+  if(processing || !cvReady || videoEl.videoWidth===0){
+    rafId = requestAnimationFrame(scanLoop);
+    return;
+  }
+  processing = true;
+  tryProcessFrame().finally(()=>{
+    processing = false;
+    if(autoResume) rafId = requestAnimationFrame(scanLoop);
+  });
+}
+
+async function tryProcessFrame(){
+  const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+  overlayEl.width = vw; overlayEl.height = vh;
+  const cvs = document.createElement('canvas');
+  cvs.width = vw; cvs.height = vh;
+  const ctx = cvs.getContext('2d');
+  ctx.drawImage(videoEl, 0, 0, vw, vh);
+
+  let corners;
+  try{
+    corners = findFiducials(cvs);
+  }catch(e){ corners = null; }
+
+  drawOverlay(corners, vw, vh);
+
+  if(!corners){
+    setStatus('Posicione a folha inteira dentro do quadro (cantos pretos visíveis)', 'warn');
+    return;
+  }
+
+  const warped = warpToReference(cvs, corners);
+
+  let qrData = decodeQR(cvs) || decodeQR(warped);
+  if(!qrData){
+    setStatus('Cantos ok, mas não consegui ler o QR code. Aproxime um pouco.', 'warn');
+    return;
+  }
+  let aluno;
+  try{ aluno = JSON.parse(qrData); }
+  catch(e){ aluno = { id:'?', nome: qrData, turma:'' }; }
+
+  const numQ = parseInt(document.getElementById('numQuestions').value)||60;
+  const respostas = readBubbles(warped, numQ);
+
+  autoResume = false;
+  if(rafId) cancelAnimationFrame(rafId);
+
+  lastResult = {
+    aluno, respostas, total:numQ,
+    provaNome: document.getElementById('provaNome').value,
+    timestamp: new Date().toISOString()
+  };
+  showResult(lastResult);
+  setStatus('Leitura concluída ✓', 'ok');
+
+  if(document.getElementById('autoSend').checked){
+    await sendResult(lastResult);
+  }
+}
+
+function drawOverlay(corners, vw, vh){
+  const octx = overlayEl.getContext('2d');
+  octx.clearRect(0,0,vw,vh);
+  if(!corners) return;
+  octx.strokeStyle = '#4f9dff'; octx.lineWidth = 3;
+  octx.beginPath();
+  const pts = [corners.tl, corners.tr, corners.br, corners.bl, corners.tl];
+  pts.forEach((p,i)=> i===0 ? octx.moveTo(p.x,p.y) : octx.lineTo(p.x,p.y));
+  octx.stroke();
+}
+
+/* ---------- Detecção dos 4 marcadores de canto usando OpenCV.js ---------- */
+function findFiducials(canvasEl){
+  const src = cv.imread(canvasEl);
+  const gray = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+  const bin = new cv.Mat();
+  cv.threshold(gray, bin, 0, 255, cv.THRESH_BINARY_INV + cv.THRESH_OTSU);
+
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+  cv.findContours(bin, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+  const W = src.cols, H = src.rows;
+  const expectedSide = LAYOUT.fiducial_size * W;
+  const expectedArea = expectedSide*expectedSide;
+
+  const candidates = [];
+  for(let i=0;i<contours.size();i++){
+    const cnt = contours.get(i);
+    const area = cv.contourArea(cnt);
+    if(area > expectedArea*0.25 && area < expectedArea*4){
+      const rect = cv.boundingRect(cnt);
+      const aspect = rect.width / rect.height;
+      if(aspect>0.6 && aspect<1.6){
+        candidates.push({ cx: rect.x+rect.width/2, cy: rect.y+rect.height/2, area });
+      }
+    }
+    cnt.delete();
+  }
+
+  const quadrants = {
+    tl: p => p.cx < W*0.25 && p.cy < H*0.25,
+    tr: p => p.cx > W*0.75 && p.cy < H*0.25,
+    bl: p => p.cx < W*0.25 && p.cy > H*0.75,
+    br: p => p.cx > W*0.75 && p.cy > H*0.75,
+  };
+  const result = {};
+  for(const key in quadrants){
+    const inQ = candidates.filter(quadrants[key]);
+    if(inQ.length===0){ cleanup(); return null; }
+    inQ.sort((a,b)=> Math.abs(a.area-expectedArea) - Math.abs(b.area-expectedArea));
+    result[key] = { x: inQ[0].cx, y: inQ[0].cy };
+  }
+
+  function cleanup(){ src.delete(); gray.delete(); bin.delete(); contours.delete(); hierarchy.delete(); }
+  cleanup();
+  return result;
+}
+
+/* ---------- Retificação de perspectiva ---------- */
+function warpToReference(canvasEl, corners){
+  const src = cv.imread(canvasEl);
+  const dst = new cv.Mat();
+  const srcTri = cv.matFromArray(4,1,cv.CV_32FC2, [
+    corners.tl.x, corners.tl.y,
+    corners.tr.x, corners.tr.y,
+    corners.br.x, corners.br.y,
+    corners.bl.x, corners.bl.y,
+  ]);
+  const dstTri = cv.matFromArray(4,1,cv.CV_32FC2, [
+    LAYOUT.fiducials.tl[0]*REF_W, LAYOUT.fiducials.tl[1]*REF_H,
+    LAYOUT.fiducials.tr[0]*REF_W, LAYOUT.fiducials.tr[1]*REF_H,
+    LAYOUT.fiducials.br[0]*REF_W, LAYOUT.fiducials.br[1]*REF_H,
+    LAYOUT.fiducials.bl[0]*REF_W, LAYOUT.fiducials.bl[1]*REF_H,
+  ]);
+  const M = cv.getPerspectiveTransform(srcTri, dstTri);
+  const dsize = new cv.Size(REF_W, REF_H);
+  cv.warpPerspective(src, dst, M, dsize, cv.INTER_LINEAR, cv.BORDER_CONSTANT, new cv.Scalar());
+
+  const outCanvas = document.createElement('canvas');
+  outCanvas.width = REF_W; outCanvas.height = REF_H;
+  cv.imshow(outCanvas, dst);
+
+  src.delete(); dst.delete(); srcTri.delete(); dstTri.delete(); M.delete();
+  return outCanvas;
+}
+
+/* ---------- QR ---------- */
+function decodeQR(canvasEl){
+  const ctx = canvasEl.getContext('2d');
+  const imgData = ctx.getImageData(0,0,canvasEl.width, canvasEl.height);
+  const code = jsQR(imgData.data, imgData.width, imgData.height);
+  return code ? code.data : null;
+}
+
+/* ---------- Leitura das bolhas ---------- */
+function readBubbles(warpedCanvas, numQuestions){
+  const ctx = warpedCanvas.getContext('2d');
+  const img = ctx.getImageData(0,0,REF_W,REF_H);
+  const data = img.data;
+
+  function darkness(cxFrac, cyFrac){
+    const cx = cxFrac*REF_W, cy = cyFrac*REF_H;
+    const r = LAYOUT.bubble_r*REF_W*1.15;
+    let sum=0, n=0;
+    for(let dy=-r; dy<=r; dy+=1){
+      for(let dx=-r; dx<=r; dx+=1){
+        if(dx*dx+dy*dy > r*r) continue;
+        const x = Math.round(cx+dx), y = Math.round(cy+dy);
+        if(x<0||y<0||x>=REF_W||y>=REF_H) continue;
+        const idx = (y*REF_W+x)*4;
+        const gray = (data[idx]+data[idx+1]+data[idx+2])/3;
+        sum += gray; n++;
+      }
+    }
+    return n ? 255 - (sum/n) : 0;
+  }
+
+  const letras = ['A','B','C','D','E'];
+  const respostas = [];
+  for(let q=1;q<=numQuestions;q++){
+    const col = q<=LAYOUT.rows_per_col ? 0 : 1;
+    const row = (q-1) % LAYOUT.rows_per_col;
+    const y = LAYOUT.grid_start_y + row*LAYOUT.row_h;
+    const x0 = LAYOUT.col_bubble_x0[col];
+    const vals = letras.map((l,i)=> darkness(x0+i*LAYOUT.bubble_dx, y));
+    const max = Math.max(...vals);
+    const second = [...vals].sort((a,b)=>b-a)[1];
+    if(max < 55 || (max-second) < 18){
+      respostas.push(null);
+    }else{
+      respostas.push(letras[vals.indexOf(max)]);
+    }
+  }
+  return respostas;
+}
+
+/* ---------- UI de resultado ---------- */
+function showResult(result){
+  document.getElementById('resultCard').style.display = 'block';
+  document.getElementById('resAluno').textContent = result.aluno.nome || 'Aluno não identificado';
+  document.getElementById('resTurma').textContent = 'Turma: ' + (result.aluno.turma||'-') + '  ·  ID: ' + (result.aluno.id||'-');
+  document.getElementById('resTotal').textContent = result.total;
+  document.getElementById('resRespostas').textContent =
+    result.respostas.map(r=>r||'—').join(' ');
+  try{ document.getElementById('beep').play(); }catch(e){}
+}
+
+/* ---------- Envio para Google Sheets ---------- */
+async function sendResult(result){
+  if(!result) return;
+  const url = document.getElementById('webhookUrl').value.trim();
+  const respostasStr = result.respostas.map(r=>r||'-').join('');
+
+  const payload = {
+    timestamp: result.timestamp,
+    id: result.aluno.id || '',
+    nome: result.aluno.nome || '',
+    turma: result.aluno.turma || '',
+    prova: result.provaNome || '',
+    respostas: respostasStr,
+    total: result.total,
+  };
+
+  let statusText = 'erro', ok = false, rowId = null;
+  if(url){
+    try{
+      const resp = await fetch(url, {
+        method:'POST',
+        headers:{ 'Content-Type':'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload)
+      });
+      const txt = await resp.text();
+      let json = null;
+      try{ json = JSON.parse(txt); }catch(e){}
+      ok = json && json.ok;
+      rowId = json && json.row;
+      statusText = ok ? 'enviado' : 'falha no envio';
+    }catch(e){
+      statusText = 'falha de rede';
+    }
+  }else{
+    statusText = 'sem URL configurada';
+  }
+
+  addHistoryRow(result, respostasStr, statusText, ok, rowId, url);
+  resumeScanning();
+}
+
+function addHistoryRow(result, respostasStr, statusText, ok, rowId, url){
+  sentCount++;
+  document.getElementById('totalCount').textContent = sentCount + ' enviados';
+  const tbody = document.querySelector('#historyTable tbody');
+  const tr = document.createElement('tr');
+  const hora = new Date(result.timestamp).toLocaleTimeString();
+  tr.innerHTML = `
+    <td>${hora}</td>
+    <td>${result.aluno.nome||'-'}</td>
+    <td>${result.aluno.turma||'-'}</td>
+    <td style="font-family:monospace;">${respostasStr}</td>
+    <td><span class="pill ${ok?'ok':'bad'}">${statusText}</span></td>
+    <td>${rowId? '<button class="danger" style="padding:4px 8px;font-size:11px;">desfazer</button>' : ''}</td>
+  `;
+  if(rowId){
+    tr.querySelector('button').onclick = async ()=>{
+      try{
+        await fetch(url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+          body: JSON.stringify({ action:'delete', row: rowId }) });
+        tr.querySelector('.pill').textContent = 'removido';
+        tr.querySelector('.pill').className = 'pill bad';
+        tr.querySelector('button').remove();
+      }catch(e){ alert('Não consegui desfazer: '+e.message); }
+    };
+  }
+  tbody.prepend(tr);
+}
+</script>
+</body>
+</html>
