@@ -281,8 +281,18 @@ async function tryProcessFrame(manual=false){
     return false;
   }
   let aluno;
-  try{ aluno = JSON.parse(qrData); }
-  catch(e){ aluno = { id:'?', nome: qrData, turma:'' }; }
+  try{
+    aluno = JSON.parse(qrData);
+  }catch(e){
+    const textoQR = String(qrData || '').trim();
+    const nomeLimpo = textoQR.replace(/^tel:/i, '').trim();
+
+    aluno = {
+      id: '',
+      nome: nomeLimpo || 'Aluno não identificado',
+      turma: ''
+    };
+  }
 
   const numQ = parseInt(document.getElementById('numQuestions').value)||60;
   const respostas = readBubbles(warped, numQ);
@@ -582,7 +592,8 @@ function readBubbles(warpedCanvas, numQuestions){
 function showResult(result){
   document.getElementById('resultCard').style.display = 'block';
   document.getElementById('resAluno').textContent = result.aluno.nome || 'Aluno não identificado';
-  document.getElementById('resTurma').textContent = 'Turma: ' + (result.aluno.turma||'-') + '  ·  ID: ' + (result.aluno.id||'-');
+  document.getElementById('resTurma').textContent =
+    'Turma: ' + (result.aluno.turma||'-');
   document.getElementById('resTotal').textContent = result.total;
   document.getElementById('resRespostas').textContent =
     result.respostas.map(r=>r||'—').join(' ');
